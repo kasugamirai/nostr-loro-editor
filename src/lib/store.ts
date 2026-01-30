@@ -80,6 +80,8 @@ interface NostrState {
   // Actions
   generateKeys: () => void;
   importKeys: (privateKey: string) => void;
+  exportKeysAsNsec: () => string | null;
+  exportKeysAsHex: () => string | null;
   setUserName: (name: string) => void;
   addRelay: (url: string) => void;
   removeRelay: (url: string) => void;
@@ -92,6 +94,7 @@ const DEFAULT_RELAYS: NostrRelay[] = [
   { url: 'wss://relay.damus.io', status: 'disconnected' },
   { url: 'wss://nos.lol', status: 'disconnected' },
   { url: 'wss://nostr-pub.wellorder.net/', status: 'disconnected' },
+  { url: 'wss://nostr.oxtr.dev/', status: 'disconnected' },
 ];
 
 export const useNostrStore = create<NostrState>()(
@@ -139,6 +142,24 @@ export const useNostrStore = create<NostrState>()(
           console.error('Failed to import keys:', error);
           throw new Error('Invalid private key format');
         }
+      },
+
+      exportKeysAsNsec: () => {
+        const { keys } = get();
+        if (!keys) return null;
+        try {
+          const privateKeyBytes = new Uint8Array(
+            keys.privateKey.match(/.{1,2}/g)!.map((byte) => parseInt(byte, 16))
+          );
+          return nip19.nsecEncode(privateKeyBytes);
+        } catch {
+          return null;
+        }
+      },
+
+      exportKeysAsHex: () => {
+        const { keys } = get();
+        return keys?.privateKey || null;
       },
 
       setUserName: (name) => set({ userName: name }),

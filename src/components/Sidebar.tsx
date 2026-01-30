@@ -17,7 +17,8 @@ interface SidebarProps {
 
 export function Sidebar({ onSelectDocument, currentDocId }: SidebarProps) {
   const { sidebarOpen, toggleSidebar } = useUIStore();
-  const { keys, relays, userName, generateKeys, importKeys, setUserName, addRelay, removeRelay } = useNostrStore();
+  const { keys, relays, userName, generateKeys, importKeys, exportKeysAsNsec, exportKeysAsHex, setUserName, addRelay, removeRelay, clearKeys } = useNostrStore();
+  const [showPrivateKey, setShowPrivateKey] = useState(false);
   const { participants } = useEditorStore();
   const { documents, addDocument, removeDocument } = useDocuments();
 
@@ -285,7 +286,8 @@ export function Sidebar({ onSelectDocument, currentDocId }: SidebarProps) {
             <div className="space-y-2">
               <label className="text-sm font-medium text-gray-400">Nostr Keys</label>
               {keys ? (
-                <div className="space-y-2">
+                <div className="space-y-3">
+                  {/* Public Key */}
                   <div className="p-3 bg-gray-700/50 rounded">
                     <div className="text-xs text-gray-400 mb-1">Public Key (npub)</div>
                     <div className="flex items-center gap-2">
@@ -295,16 +297,94 @@ export function Sidebar({ onSelectDocument, currentDocId }: SidebarProps) {
                       <button
                         onClick={() => copyToClipboard(nip19.npubEncode(keys.publicKey))}
                         className="p-1 hover:bg-gray-600 rounded"
+                        title="Copy public key"
                       >
                         <CopyIcon />
                       </button>
                     </div>
                   </div>
+
+                  {/* Private Key */}
+                  <div className="p-3 bg-gray-700/50 rounded border border-yellow-600/30">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-xs text-yellow-500">Private Key (nsec) ⚠️</div>
+                      <button
+                        onClick={() => setShowPrivateKey(!showPrivateKey)}
+                        className="text-xs text-gray-400 hover:text-gray-200"
+                      >
+                        {showPrivateKey ? 'Hide' : 'Show'}
+                      </button>
+                    </div>
+                    {showPrivateKey ? (
+                      <>
+                        <div className="flex items-center gap-2 mb-2">
+                          <code className="text-xs flex-1 truncate text-yellow-200">
+                            {exportKeysAsNsec()}
+                          </code>
+                          <button
+                            onClick={() => {
+                              const nsec = exportKeysAsNsec();
+                              if (nsec) copyToClipboard(nsec);
+                            }}
+                            className="p-1 hover:bg-gray-600 rounded"
+                            title="Copy nsec"
+                          >
+                            <CopyIcon />
+                          </button>
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          Hex:
+                          <button
+                            onClick={() => {
+                              const hex = exportKeysAsHex();
+                              if (hex) copyToClipboard(hex);
+                            }}
+                            className="ml-1 text-gray-400 hover:text-gray-200 underline"
+                          >
+                            Copy hex format
+                          </button>
+                        </div>
+                        <div className="mt-2 text-xs text-yellow-600">
+                          ⚠️ Never share your private key!
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-xs text-gray-500">
+                        Click "Show" to reveal your private key
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Key Actions */}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setShowKeyImport(true)}
+                      className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+                    >
+                      Import Key
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (confirm('Are you sure? This will generate a new key pair and you will lose access to your current identity.')) {
+                          generateKeys();
+                        }
+                      }}
+                      className="flex-1 py-2 bg-purple-600 hover:bg-purple-700 rounded text-sm transition-colors"
+                    >
+                      New Key
+                    </button>
+                  </div>
+
+                  {/* Logout */}
                   <button
-                    onClick={() => setShowKeyImport(true)}
-                    className="w-full py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+                    onClick={() => {
+                      if (confirm('This will remove your keys from this browser. Make sure you have backed up your private key!')) {
+                        clearKeys();
+                      }
+                    }}
+                    className="w-full py-2 bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded text-sm transition-colors"
                   >
-                    Import Different Key
+                    Remove Keys
                   </button>
                 </div>
               ) : (
