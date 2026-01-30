@@ -35,7 +35,7 @@ export function App() {
       {/* Main Content */}
       <main className="flex-1 flex flex-col overflow-hidden">
         {currentDocId ? (
-          <Editor docId={currentDocId} />
+          <Editor docId={currentDocId} showDebug={true} />
         ) : (
           <WelcomeScreen />
         )}

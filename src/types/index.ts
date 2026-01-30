@@ -81,7 +81,38 @@ export const NOSTR_KINDS = {
   DOCUMENT_SNAPSHOT: 30079,  // Replaceable: full document snapshot
   CRDT_UPDATE: 21000,        // Regular: incremental CRDT update
   PRESENCE: 21001,           // Ephemeral: presence/cursor info
+  PING: 21002,               // Latency test ping
+  PONG: 21003,               // Latency test pong
 } as const;
+
+// Latency Measurement Types
+export interface LatencyMeasurement {
+  id: string;
+  sentAt: number;
+  receivedAt?: number;
+  latency?: number;
+  relay?: string;
+}
+
+export interface SyncMetrics {
+  // Latency stats
+  lastLatency: number;
+  avgLatency: number;
+  minLatency: number;
+  maxLatency: number;
+  measurements: LatencyMeasurement[];
+
+  // Sync stats
+  messagesSent: number;
+  messagesReceived: number;
+  bytesSent: number;
+  bytesReceived: number;
+  lastSyncAt: number;
+
+  // Connection stats
+  connectedRelays: number;
+  totalRelays: number;
+}
 
 // Store Types
 export interface EditorStore {

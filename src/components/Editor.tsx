@@ -8,14 +8,16 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { useLoroNostr } from '@/hooks/useLoroNostr';
 import { useNostrStore } from '@/lib/store';
 import { generateColor } from '@/lib/loro-nostr-provider';
+import { DebugPanel } from './DebugPanel';
 import clsx from 'clsx';
 
 interface EditorProps {
   docId: string;
   className?: string;
+  showDebug?: boolean;
 }
 
-export function Editor({ docId, className }: EditorProps) {
+export function Editor({ docId, className, showDebug = true }: EditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const [localContent, setLocalContent] = useState('');
   const isComposing = useRef(false);
@@ -24,6 +26,7 @@ export function Editor({ docId, className }: EditorProps) {
   const {
     doc,
     text,
+    provider,
     isConnected,
     isSyncing,
     participants,
@@ -227,6 +230,15 @@ export function Editor({ docId, className }: EditorProps) {
         editorRef={editorRef}
         content={localContent}
       />
+
+      {/* Debug Panel */}
+      {showDebug && (
+        <DebugPanel
+          docId={docId}
+          provider={provider}
+          isConnected={isConnected}
+        />
+      )}
     </div>
   );
 }

@@ -18,7 +18,7 @@ import {
   type Event as NostrEvent,
   type Filter,
 } from 'nostr-tools';
-import { NOSTR_KINDS, type SyncMessage, type Participant } from '@/types';
+import { NOSTR_KINDS, type SyncMessage, type Participant, type SyncMetrics, type LatencyMeasurement } from '@/types';
 
 // Event emitter for provider events
 type ProviderEventType =
@@ -27,7 +27,9 @@ type ProviderEventType =
   | 'connected'
   | 'disconnected'
   | 'error'
-  | 'awareness';
+  | 'awareness'
+  | 'metrics'
+  | 'pong';
 
 type ProviderEventCallback = (data: unknown) => void;
 
@@ -62,6 +64,23 @@ export class LoroNostrProvider {
   private options: Required<LoroNostrProviderOptions>;
   private awareness: Map<string, Participant> = new Map();
   private lastExportedVersion: ReturnType<LoroDoc['version']> | null = null;
+
+  // Metrics tracking
+  private metrics: SyncMetrics = {
+    lastLatency: 0,
+    avgLatency: 0,
+    minLatency: Infinity,
+    maxLatency: 0,
+    measurements: [],
+    messagesSent: 0,
+    messagesReceived: 0,
+    bytesSent: 0,
+    bytesReceived: 0,
+    lastSyncAt: 0,
+    connectedRelays: 0,
+    totalRelays: 0,
+  };
+  private pendingPings: Map<string, LatencyMeasurement> = new Map();
 
   constructor(doc: LoroDoc, options: LoroNostrProviderOptions) {
     this.doc = doc;
@@ -184,6 +203,19 @@ export class LoroNostrProvider {
       },
     });
 
+    // Subscribe to ping/pong for latency measurement
+    const pingPongFilter: Filter = {
+      kinds: [NOSTR_KINDS.PING, NOSTR_KINDS.PONG],
+      '#d': [this.docId],
+      since: Math.floor(Date.now() / 1000) - 10, // Last 10 seconds only
+    };
+
+    this.pool.subscribeMany(this.relays, pingPongFilter, {
+      onevent: (event: NostrEvent) => {
+        this.handleEvent(event);
+      },
+    });
+
     this.subscriptionId = 'active';
   }
 
@@ -238,6 +270,10 @@ export class LoroNostrProvider {
       return;
     }
 
+    // Track received messages
+    this.metrics.messagesReceived++;
+    this.metrics.bytesReceived += event.content.length;
+
     switch (event.kind) {
       case NOSTR_KINDS.CRDT_UPDATE:
         this.applyUpdate(event);
@@ -247,6 +283,12 @@ export class LoroNostrProvider {
         break;
       case NOSTR_KINDS.PRESENCE:
         this.handlePresence(event);
+        break;
+      case NOSTR_KINDS.PING:
+        this.handlePing(event);
+        break;
+      case NOSTR_KINDS.PONG:
+        this.handlePong(event);
         break;
     }
   }
@@ -474,6 +516,201 @@ export class LoroNostrProvider {
    */
   getAwareness(): Participant[] {
     return Array.from(this.awareness.values());
+  }
+
+  /**
+   * Send a ping to measure latency
+   */
+  async ping(): Promise<LatencyMeasurement> {
+    const pingId = `ping-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const sentAt = Date.now();
+
+    const measurement: LatencyMeasurement = {
+      id: pingId,
+      sentAt,
+    };
+    this.pendingPings.set(pingId, measurement);
+
+    const event = finalizeEvent(
+      {
+        kind: NOSTR_KINDS.PING,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['d', this.docId],
+          ['ping-id', pingId],
+          ['sent-at', sentAt.toString()],
+        ],
+        content: JSON.stringify({ pingId, sentAt }),
+      },
+      this.privateKey
+    );
+
+    this.metrics.messagesSent++;
+    this.metrics.bytesSent += event.content.length;
+
+    try {
+      await Promise.allSettled(this.pool.publish(this.relays, event));
+    } catch (error) {
+      console.warn('Failed to send ping:', error);
+    }
+
+    return measurement;
+  }
+
+  /**
+   * Handle incoming ping - respond with pong
+   */
+  private async handlePing(event: NostrEvent): Promise<void> {
+    // Don't respond to our own pings
+    if (event.pubkey === this.publicKey) return;
+
+    const pingIdTag = event.tags.find(t => t[0] === 'ping-id');
+    const sentAtTag = event.tags.find(t => t[0] === 'sent-at');
+    if (!pingIdTag || !sentAtTag) return;
+
+    const pongEvent = finalizeEvent(
+      {
+        kind: NOSTR_KINDS.PONG,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['d', this.docId],
+          ['ping-id', pingIdTag[1]],
+          ['sent-at', sentAtTag[1]],
+          ['pong-at', Date.now().toString()],
+          ['p', event.pubkey], // Reply to sender
+        ],
+        content: JSON.stringify({
+          pingId: pingIdTag[1],
+          originalSentAt: parseInt(sentAtTag[1]),
+          pongAt: Date.now(),
+        }),
+      },
+      this.privateKey
+    );
+
+    this.metrics.messagesSent++;
+    await Promise.allSettled(this.pool.publish(this.relays, pongEvent));
+  }
+
+  /**
+   * Handle incoming pong - calculate latency
+   */
+  private handlePong(event: NostrEvent): void {
+    const pingIdTag = event.tags.find(t => t[0] === 'ping-id');
+    const sentAtTag = event.tags.find(t => t[0] === 'sent-at');
+    if (!pingIdTag || !sentAtTag) return;
+
+    const pingId = pingIdTag[1];
+    const originalSentAt = parseInt(sentAtTag[1]);
+    const receivedAt = Date.now();
+
+    // Check if this is a response to our ping
+    const pending = this.pendingPings.get(pingId);
+    if (pending) {
+      const latency = receivedAt - originalSentAt;
+      pending.receivedAt = receivedAt;
+      pending.latency = latency;
+
+      // Update metrics
+      this.updateLatencyMetrics(latency);
+      this.pendingPings.delete(pingId);
+
+      this.emit('pong', { pingId, latency, from: event.pubkey });
+    }
+  }
+
+  /**
+   * Update latency metrics
+   */
+  private updateLatencyMetrics(latency: number): void {
+    this.metrics.lastLatency = latency;
+    this.metrics.minLatency = Math.min(this.metrics.minLatency, latency);
+    this.metrics.maxLatency = Math.max(this.metrics.maxLatency, latency);
+
+    // Keep last 100 measurements
+    this.metrics.measurements.push({
+      id: `m-${Date.now()}`,
+      sentAt: Date.now() - latency,
+      receivedAt: Date.now(),
+      latency,
+    });
+    if (this.metrics.measurements.length > 100) {
+      this.metrics.measurements.shift();
+    }
+
+    // Calculate average
+    const sum = this.metrics.measurements.reduce((acc, m) => acc + (m.latency || 0), 0);
+    this.metrics.avgLatency = Math.round(sum / this.metrics.measurements.length);
+
+    this.emit('metrics', this.metrics);
+  }
+
+  /**
+   * Run a latency test with multiple pings
+   */
+  async runLatencyTest(count: number = 10, intervalMs: number = 500): Promise<SyncMetrics> {
+    const results: number[] = [];
+
+    for (let i = 0; i < count; i++) {
+      const measurement = await this.ping();
+
+      // Wait for pong or timeout
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => {
+          resolve();
+        }, 5000); // 5 second timeout
+
+        const checkPong = () => {
+          if (measurement.latency !== undefined) {
+            clearTimeout(timeout);
+            results.push(measurement.latency);
+            resolve();
+          } else {
+            setTimeout(checkPong, 50);
+          }
+        };
+        checkPong();
+      });
+
+      // Wait before next ping
+      if (i < count - 1) {
+        await new Promise(r => setTimeout(r, intervalMs));
+      }
+    }
+
+    return this.metrics;
+  }
+
+  /**
+   * Get current sync metrics
+   */
+  getMetrics(): SyncMetrics {
+    return {
+      ...this.metrics,
+      connectedRelays: this.isConnected ? this.relays.length : 0,
+      totalRelays: this.relays.length,
+    };
+  }
+
+  /**
+   * Reset metrics
+   */
+  resetMetrics(): void {
+    this.metrics = {
+      lastLatency: 0,
+      avgLatency: 0,
+      minLatency: Infinity,
+      maxLatency: 0,
+      measurements: [],
+      messagesSent: 0,
+      messagesReceived: 0,
+      bytesSent: 0,
+      bytesReceived: 0,
+      lastSyncAt: 0,
+      connectedRelays: 0,
+      totalRelays: this.relays.length,
+    };
+    this.pendingPings.clear();
   }
 
   /**
